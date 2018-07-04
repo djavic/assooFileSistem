@@ -20,17 +20,22 @@ static int assoofs_create(struct inode *dir,struct dentry *dentry, umode_t mode,
 static int assoofs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode);
 static int assoofs_iterate(struct file *filp, struct dir_context *ctx);
 
+static int assoofs_create_fs_object(struct inode *dir, struct dentry *dentry, umode_t mode);
+static struct kmem_cache *assoofs_inode_cache;
+
 int assoofs_fill_super(struct super_block *sb, void *data, int silent);
 int assoofs_sb_get_a_freeblock(struct super_block *sb ,uint64_t *block);
 void assoofs_save_sb_info (struct super_block *vsb);
 void assoofs_add_inode_info(struct super_block *sb , struct assoofs_inode_info *inode);
 int assoofs_save_inode_info(struct super_block *sb , struct assoofs_inode_info *inode_info);
 
+void assoofs_destroy_inode(struct inode *inode);
+
 ssize_t assoofs_read(struct file *filp, char __user *buf, size_t len, loff_t *ppos);
 ssize_t assoofs_write(struct file *filp, const char __user *buf, size_t len, loff_t *ppos);
 
 struct assoofs_inode_info*assoofs_get_inode_info ( struct super_block * sb , uint64_t inode_no);
-struct dentry *simplefs_lookup(struct inode *parent_inode, struct dentry *child_dentry, unsigned int flags);
+struct dentry *assoofs_lookup(struct inode *parent_inode, struct dentry *child_dentry, unsigned int flags);
 struct assoofs_inode_info *assoofs_search_inode_info(struct super_block *sb, struct assoofs_inode_info *start, struct assoofs_inode_info *search);
 
 
@@ -49,9 +54,11 @@ static struct file_system_type assoofs_type = {
 
  static const struct super_operations assoofs_sops = {
 	.drop_inode = generic_delete_inode,
+	.destroy_inode = assoofs_destory_inode,
+	.put_super = assoofs_put_super,
 };
 
-static struct inode_ope rationsassoofs_inode_ops = {
+static struct inode_operations assoofs_inode_ops = {
 	.lookup = assoofs_lookup,
 	.create = assoofs_create,
 	.mkdir = assoofs_mkdir,
@@ -68,6 +75,81 @@ const struct file_operations assoofs_dir_operations = {
  };
 
 
+ static int assoofs_create_fs_object(struct inode *dir, struct dentry *dentry, umode_t mode){
+
+    struct buffer_head *bh;
+    struct inode *inode;
+    struct super_block *sb;
+    struct assoofs_inode_info *inode_info;
+    struct assoofs_inode_info *parent_inode_info;
+    struct assoofs_dir_record_entry *dir_contents;
+    struct assoofs_super_block_info *sb_disk;
+    uint64_t count;
+
+    sb = dir->i_sb;
+    sb_disk = sb->s_fs_info;
+    count = sb_disk->inodes_count;
+
+    if(count > ASSOOFS_MAX_FILESYSTEM_OBJECTS_SUPPORTED){
+
+        return -1;
+    }
+    printk(KERN_INFO "CREATE\n");
+
+    inode = new_inode(sb);
+    inode->i_sb = sb;
+    inode->i_op = &assoofs_inode_ops;
+    inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
+    inode->i_ino = (count + ASSOOFS_START_INO - ASSOOFS_RESERVED_INODES + 1);
+
+    inode_info = kmem_cache_alloc(assoofs_inode_cache, GFP_KERNEL);
+
+    inode_info = assoofs_get_inode_info(sb, inode->i_ino);
+    inode_info->inode_no = inode->i_ino;
+    inode->i_private = inode_info;
+    inode_info->mode = mode;
+
+
+    if(S_ISDIR(mode)){
+        printk(KERN_INFO "New directory creation request\n");
+        inode_info->dir_children_count = 0;
+        inode->i_fop = &assoofs_dir_operations;
+
+    }else if(S_ISREG(mode)){
+        printk(KERN_INFO "New file creation request\n");
+        inode_info->file_size = 0;
+        inode->i_fop = &assoofs_file_operations;
+    }
+
+    assoofs_sb_get_a_freeblock(sb, &inode_info->data_block_number);
+
+    assoofs_add_inode_info(sb, inode_info);
+
+    parent_inode_info = dir->i_private;
+    bh = sb_bread(sb, parent_inode_info->data_block_number);
+
+    dir_contents = (struct assoofs_dir_record_entry *) bh->b_data;
+    dir_contents += parent_inode_info->dir_children_count;
+    dir_contents->inode_no = inode_info->inode_no;
+
+    strcpy(dir_contents->filename, dentry->d_name.name);
+
+    //save
+    assoofs_save_inode_info(sb, parent_inode_info);
+
+    mark_buffer_dirty(bh);
+    sync_dirty_buffer(bh);
+    brelse(bh);
+
+    parent_inode_info->dir_children_count++;
+    assoofs_save_inode_info(sb, parent_inode_info);
+
+    inode_init_owner(inode, dir, mode);
+    d_add(dentry, inode);
+    return 0;
+}
+
+
 /*
 *APARTADO 2.3.3
 */
@@ -76,14 +158,13 @@ const struct file_operations assoofs_dir_operations = {
 
 	struct inode *root_inode;
 	struct buffer_head *bh;
-	struct assoofs_super_block *assoofs_disk;
-	int ret = -EPERM;
+	struct assoofs_super_block_info *assoofs_sb;
+	
 
 	bh = sb_bread(sb, ASSOOFS_SUPERBLOCK_BLOCK_NUMBER);
-	assoofs_sb = (struct assoofs_super_block *)bh->b_data;
+	assoofs_sb = (struct assoofs_super_block_info *)bh->b_data;
 
-	printk(KERN_INFO "The magic number obtained in disk is: [%llu]\n",
-	       sb_disk->magic);
+
 
 	if (assoofs_sb->magic == ASSOOFS_MAGIC) {
 		printk(KERN_INFO "Magic correcto");
@@ -100,20 +181,15 @@ const struct file_operations assoofs_dir_operations = {
 		printk(KERN_ERR"Tamanio bloque incorrecto");
 	}
 	
-	sb_disk->journal = NULL;
-
-	printk(KERN_INFO
-	       "simplefs filesystem of version [%llu] formatted with a block size of [%llu] detected in the device.\n",
-	       sb_disk->version, sb_disk->block_size);
 
 	
 	sb->s_magic = ASSOOFS_MAGIC;
 	sb->s_fs_info = assoofs_sb;
-	sb->s_maxbytes = SIMPLEFS_DEFAULT_BLOCK_SIZE;
+	sb->s_maxbytes = ASSOOFS_DEFAULT_BLOCK_SIZE;
 	sb->s_op = &assoofs_sops;
 	//CREACION DEL INODO RAIZ
 	root_inode = new_inode(sb);
-	root_inode->i_ino = SIMPLEFS_ROOTDIR_INODE_NUMBER;
+	root_inode->i_ino = ASSOOFS_ROOTDIR_INODE_NUMBER;
 	inode_init_owner(root_inode, NULL, S_IFDIR);
 	root_inode->i_sb = sb;
 	root_inode->i_op = &assoofs_inode_ops;
@@ -131,19 +207,18 @@ const struct file_operations assoofs_dir_operations = {
 	return 0;//TODO CORRECTO
 }
 //INODEINFO
-struct assoofs_inode_info*assoofs_get_inode_info ( struct super_block * sb , uint64_t inode_no){
+struct assoofs_inode_info *assoofs_get_inode_info(struct super_block *sb , uint64_t inode_no){
 
-	struct assoofs_inode_info*inode_info = NULL;
-	struct buffer_head * bh ;
+	struct assoofs_inode_info *inode_buffer;
+	struct buffer_head *bh ;
+	struct assoofs_super_block_info *afs_sb;
+	struct assoofs_inode_info *inode_info;
 
+	bh = sb_bread(sb , ASSOOFS_INODESTORE_BLOCK_NUMBER);
+	inode_info = (struct assoofs_inode_info*)bh->b_data;
 
-	bh = sb_bread ( sb , ASSOOFS_INODESTORE_BLOCK_NUMBER);
-	inode_info = ( struct assoofs_inode_info*)bh -> b_data;
-
-	struct assoofs_super_block_info *afs_sb = ab ->s_fs_info:
-	struct assoofs_inode_info *buffer = NULL;
-
-	int i
+	
+	int i;
 	for(i = 0; i < afs_sb->inodes_count; i++){
 		if(inode_info->inode_no == inode_no){
 
@@ -155,19 +230,22 @@ struct assoofs_inode_info*assoofs_get_inode_info ( struct super_block * sb , uin
 	}
 
 	brelse(bh);
-	return buffer;
+	return inode_info;
 
 	/**
 	*APARTADO 2.3.4
 	*/
-
+}
 //RECORRER EL ARBOL DE INODOS
 struct dentry *assoofs_lookup(struct inode *parent_inode, struct dentry *child_dentry, unsigned int flags){
 
-	struct assoofs_inode_info *parent_info = parent_inode->i_private;
-	struct super_block *sb = parent_inode->i_sb;
-	struct buffer_head *bh;
+	
+	struct super_block *sb;
+	struct inode *inode;
 	struct assoofs_dir_record_entry *record;
+	struct buffer_head *bh;
+	struct assoofs_inode_info *parent_info;
+	struct assoofs_inode_info *inode_info;
 	
 	bh = sb_bread(sb, parent->data_block_number);
 	
