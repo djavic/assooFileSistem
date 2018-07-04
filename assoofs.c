@@ -228,6 +228,15 @@ int assoofs_sb_get_a_freeblock(struct super_block *sb ,uint64_t *block){
 //FUNCION AUXILIAR, NOS PERMITE ACTUALIZAR LA INFORMACION PERSISTENTE DEL SUPERBLOQUE CUANDO HAY UN CAMBIO
 void assoofs_save_sb_info (struct super_block *vsb){
 
+	struct buffer_head *bh ;
+	struct assoofs_super_block *sb = vsb->s_fs_info ; // Informaci ó n persistente del superbloque en memoria
+	
+	bh = sb_bread (vsb ,ASSOOFS_SUPERBLOCK_BLOCK_NUMBER);
+	bh->b_data = (char*)sb; // Sobreescribo los datos de disco con la informaci ó n en memoria
+
+	mark_buffer_dirty(bh);
+	sync_dirty_buffer(bh);
+	brelse(bh);
 
 }
 
@@ -256,11 +265,7 @@ static int assoofs_init(void){ //ASSOOFS INIT
 
 	
 
-	assoofs_inode_cachep = kmem_cache_create("assoofs _inode_cache",
-	                                     sizeof(struct simplefs_inode),
-	                                     0,
-	                                     (SLAB_RECLAIM_ACCOUNT| SLAB_MEM_SPREAD),
-	                                     NULL);
+	assoofs_inode_cachep = kmem_cache_create("assoofs _inode_cache",sizeof(struct simplefs_inode),0,(SLAB_RECLAIM_ACCOUNT| SLAB_MEM_SPREAD),NULL);
 	
 
 	
