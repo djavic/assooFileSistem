@@ -15,15 +15,19 @@ MODULE_AUTHOR("Francisco Javier Alvarez de Celis");
 */
 //MONTAR NUEVO SISTEMA DE FICHEROS
 static struct dentry *assoofs_mount(struct file_system_type *fs_type, int flags, const char *dev_name, void *data);
-static struct inode *assoofs_get_inode(struct super_block *sb , int ino );
+static struct inode *assoofs_get_inode(struct super_block *sb , int ino);
 static int assoofs_create(struct inode *dir,struct dentry *dentry, umode_t mode, bool excl);
+static int assoofs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode);
+static int assoofs_iterate(struct file *filp, struct dir_context *ctx);
+
 int assoofs_fill_super(struct super_block *sb, void *data, int silent);
 int assoofs_sb_get_a_freeblock(struct super_block *sb ,uint64_t *block);
 void assoofs_save_sb_info (struct super_block *vsb);
 void assoofs_add_inode_info(struct super_block *sb , struct assoofs_inode_info *inode);
 int assoofs_save_inode_info(struct super_block *sb , struct assoofs_inode_info *inode_info);
 
-
+ssize_t assoofs_read(struct file *filp, char __user *buf, size_t len, loff_t *ppos);
+ssize_t assoofs_write(struct file *filp, const char __user *buf, size_t len, loff_t *ppos);
 
 struct assoofs_inode_info*assoofs_get_inode_info ( struct super_block * sb , uint64_t inode_no);
 struct dentry *simplefs_lookup(struct inode *parent_inode, struct dentry *child_dentry, unsigned int flags);
@@ -37,7 +41,6 @@ struct assoofs_inode_info *assoofs_search_inode_info(struct super_block *sb, str
 
 
 static struct file_system_type assoofs_type = {
-
 	.owner = THIS_MODULE,
  	.name = "assoofs",
  	.mount = assoofs_mount,
@@ -54,9 +57,19 @@ static struct inode_ope rationsassoofs_inode_ops = {
 	.mkdir = assoofs_mkdir,
 };
 
+const struct file_operations assoofs_dir_operations = {
+ 	.owner = THIS_MODULE,
+ 	.iterate = assoofs_iterate,
+ };
+
+ const struct file_operations assoofs_file_operations = {
+ 	.read = assoofs_read,
+ 	.write = assoofs_write,
+ };
+
 
 /*
-*
+*APARTADO 2.3.3
 */
 
  int assoofs_fill_super(struct super_block *sb, void *data, int silent){//FUNCION PARA INICIALIZAR EL SUPERBLOQUE
@@ -143,6 +156,10 @@ struct assoofs_inode_info*assoofs_get_inode_info ( struct super_block * sb , uin
 
 	brelse(bh);
 	return buffer;
+
+	/**
+	*APARTADO 2.3.4
+	*/
 
 //RECORRER EL ARBOL DE INODOS
 struct dentry *assoofs_lookup(struct inode *parent_inode, struct dentry *child_dentry, unsigned int flags){
@@ -268,9 +285,9 @@ void assoofs_add_inode_info(struct super_block *sb , struct assoofs_inode_info *
 	mark_buffer_dirty(bh);
 	assoofs_save_sb_info(sb);
 	brelse(bh);
+}
 
-
-
+//NOS PERMITE ACTUALIZAR LA INFORMACION PERSISTENTE DE UN INODO
 int assoofs_save_inode_info(struct super_block *sb , struct assoofs_inode_info *inode_info){
 
 
@@ -288,6 +305,7 @@ int assoofs_save_inode_info(struct super_block *sb , struct assoofs_inode_info *
 	return 0;
 }
 
+//NOS PERMITIRA OBTENER UN PUNTERO A LA INFORMACION PERSISTENTE DE UN INODO EN CONCRETO
 struct assoofs_inode_info *assoofs_search_inode_info(struct super_block *sb, struct assoofs_inode_info *start, struct assoofs_inode_info *search){
 
     uint64_t count = 0;
@@ -304,6 +322,141 @@ struct assoofs_inode_info *assoofs_search_inode_info(struct super_block *sb, str
 
 	return NULL;
 }
+
+//NOS PERMITE CREAR NUEVOS INODOS PARA DIRECTORIOS
+static int assoofs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode){
+
+	return assoofs_create_fs_object(dir, dentry, S_IFDIR | mode);
+}
+
+/**
+*APARTADO 2.3.5
+*
+*/
+
+//PERMITE MOSTRAR EL CONTENIDO DE UN DIRECTORIO(LS)
+static int assoofs_iterate(struct file *filp, struct dir_context *ctx){
+
+	struct inode * inode;
+	struct super_block *sb;
+	struct buffer_head *bh;
+	struct assoofs_inode_info *inode_info;
+	struct assoofsfs_dir_record_entry *record;
+
+	assoofs_inode_ info *inode_info;
+
+
+	inode = filp->f_path.dentry->d_inode;
+	sb = inode->i_sb;
+	inode_info = inode->i_private;
+
+	if(ctx->pos)return 0;
+
+	if ((!S_ISDIR(inode_info->mode)))return -1;
+
+	
+	bh = sb_bread(sb,inode_info->data_block_number);
+	record = (struct assoofs_dir_record_entry *) bh->b_data;
+
+	int i;
+	for(i = 0; i < inode_info-> dir_children_count;i++) {
+
+		dir_emit(ctx,record->filename,ASSOOFS_FILENAME_MAXLEN,record->inode_no,DT_UNKNOWN);
+		ctx-> pos += sizeof(struct assoofs_dir_record_entry);
+		record ++;
+	}
+
+	brelse ( bh ) ;
+	return 0;
+
+}
+
+//PERMITE LEER ARCHIVOS
+ssize_t assoofs_read(struct file *filp, char __user *buf, size_t len, loff_t *ppos){
+
+	struct inode * inode;
+	struct super_block *sb;
+	struct buffer_head *bh;
+	struct assoofs_inode_info *inode_info;
+	struct assoofsfs_dir_record_entry *record;
+	struct assoofs_inode_info *inode_info = filp->f_path.dentry->d_inode->i_private;
+
+	char *buffer;
+	int nbytes ;
+
+	if (*ppos >= inode_info->file_size) return 0;
+
+	
+	bh = sb_bread(filp->f_path.dentry->d_inode->i_sb,inode_info->data_block_number);
+
+	if (!bh) {
+		printk(KERN_ERR "Reading the block number [%llu] failed.",
+		       inode->data_block_number);
+		return 0;
+	}
+
+	buffer = (char *)bh->b_data;
+
+
+	
+	nbytes = min((size_t)inode_info->file_size,len); 
+	
+	copy_to_user(buf,buffer,nbytes);
+	*ppos += nbytes;
+	return nbytes;
+
+}
+
+
+ssize_t assoofs_write(struct file *filp, const char __user *buf, size_t len, loff_t *ppos){
+
+	struct inode * inode;
+	struct super_block *sb;
+	struct buffer_head *bh;
+	struct assoofs_inode_info *inode_info;
+	struct assoofsfs_dir_record_entry *record;
+
+	char *buffer;
+
+    printk(KERN_INFO "WRITE\n");
+
+    sb = filp->f_path.dentry->d_inode->i_sb;
+    inode = filp->f_path.dentry->d_inode;
+    inode_info = inode->i_private;
+
+	bh = sb_bread(sb, inode_info->data_block_number);
+	if (!bh) {
+		printk(KERN_ERR "Reading the block number [%llu] failed.\n", inode_info->data_block_number);
+		return 0;
+	}
+
+    //if(*ppos >= inode_info->file_size) return 0;
+
+    buffer = (char *)bh->b_data;
+    buffer += *ppos;
+
+    if (copy_from_user(buffer, buf, len)) {
+		brelse(bh);
+		printk(KERN_ERR "Error copying from user\n");
+		return 0;
+	}
+    *ppos += len;
+    inode_info->file_size = *ppos;
+
+   	mark_buffer_dirty(bh);
+	sync_dirty_buffer(bh);
+    brelse(bh);
+
+    assoofs_save_inode_info(sb, inode_info);
+
+	return len;
+}
+
+}
+
+
+
+
 
 
 
