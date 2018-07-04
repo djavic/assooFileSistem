@@ -17,20 +17,25 @@ MODULE_AUTHOR("Francisco Javier Alvarez de Celis");
 static struct dentry *assoofs_mount(struct file_system_type *fs_type, int flags, const char *dev_name, void *data);
 static struct inode *assoofs_get_inode(struct super_block *sb , int ino );
 static int assoofs_create(struct inode *dir,struct dentry *dentry, umode_t mode, bool excl);
+int assoofs_fill_super(struct super_block *sb, void *data, int silent);
 int assoofs_sb_get_a_freeblock(struct super_block *sb ,uint64_t *block);
 void assoofs_save_sb_info (struct super_block *vsb);
+void assoofs_add_inode_info(struct super_block *sb , struct assoofs_inode_info *inode);
+int assoofs_save_inode_info(struct super_block *sb , struct assoofs_inode_info *inode_info);
+
 
 
 struct assoofs_inode_info*assoofs_get_inode_info ( struct super_block * sb , uint64_t inode_no);
 struct dentry *simplefs_lookup(struct inode *parent_inode, struct dentry *child_dentry, unsigned int flags);
+struct assoofs_inode_info *assoofs_search_inode_info(struct super_block *sb, struct assoofs_inode_info *start, struct assoofs_inode_info *search);
 
 
 
-int assoofs_fill_super(struct super_block *sb, void *data, int silent);
-/**
-*STRUCS HERE
-*
-*/
+
+
+
+
+
 static struct file_system_type assoofs_type = {
 
 	.owner = THIS_MODULE,
@@ -226,11 +231,11 @@ int assoofs_sb_get_a_freeblock(struct super_block *sb ,uint64_t *block){
 }
 
 //FUNCION AUXILIAR, NOS PERMITE ACTUALIZAR LA INFORMACION PERSISTENTE DEL SUPERBLOQUE CUANDO HAY UN CAMBIO
-void assoofs_save_sb_info (struct super_block *vsb){
+void assoofs_save_sb_info(struct super_block *vsb){
 
 	struct buffer_head *bh ;
 	struct assoofs_super_block *sb = vsb->s_fs_info ; // Informaci ó n persistente del superbloque en memoria
-	
+
 	bh = sb_bread (vsb ,ASSOOFS_SUPERBLOCK_BLOCK_NUMBER);
 	bh->b_data = (char*)sb; // Sobreescribo los datos de disco con la informaci ó n en memoria
 
@@ -239,6 +244,76 @@ void assoofs_save_sb_info (struct super_block *vsb){
 	brelse(bh);
 
 }
+
+//NOS PERMITIRA GUARDAR EN EL DISCO TODA LA INFORMACION PERSISTENTE DE UN NUEVO INODO
+void assoofs_add_inode_info(struct super_block *sb , struct assoofs_inode_info *inode){
+
+	struct simplefs_super_block *assoofs_sb;
+	struct buffer_head *bh;
+	struct simplefs_inode *inode_info;
+
+	
+
+	bh = sb_bread(vsb, SIMPLEFS_INODESTORE_BLOCK_NUMBER);
+	
+
+	inode_info = (struct assoofs_inode_info *)bh->b_data;
+
+	
+	inode_info += sb->inodes_count;
+
+	memcpy(inode_info, inode, sizeof(struct assoofs_inode));
+	assoo_sb->inodes_count++;
+
+	mark_buffer_dirty(bh);
+	assoofs_save_sb_info(sb);
+	brelse(bh);
+
+
+
+int assoofs_save_inode_info(struct super_block *sb , struct assoofs_inode_info *inode_info){
+
+
+	struct assoofs_inode_info *inode_pos;
+	struct buffer_head *bh;
+
+	bh = sb_bread(sb, SIMPLEFS_INODESTORE_BLOCK_NUMBER);
+	inode_pos = simplefs_inode_search(sb,(struct assoofs_inode_info *)bh->b_data,inode_info);
+
+	memcpy(inode_pos,inode_info, sizeof(*inode_pos));
+	
+	mark_buffer_dirty(bh);
+	sync_dirty_buffer(bh);
+
+	return 0;
+}
+
+struct assoofs_inode_info *assoofs_search_inode_info(struct super_block *sb, struct assoofs_inode_info *start, struct assoofs_inode_info *search){
+
+    uint64_t count = 0;
+
+    while(start->inode_no != search->inode_no && count < ((struct assoofs_super_block_info *) sb->s_fs_info)->inodes_count){
+
+        count++;
+        start++;
+    }
+
+    if(start->inode_no == search->inode_no){
+      return start;
+    }
+
+	return NULL;
+}
+
+
+
+
+
+
+
+
+
+
 
 
 
