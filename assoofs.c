@@ -54,8 +54,7 @@ static struct file_system_type assoofs_type = {
 
  static const struct super_operations assoofs_sops = {
 	.drop_inode = generic_delete_inode,
-	.destroy_inode = assoofs_destory_inode,
-	.put_super = assoofs_put_super,
+	
 };
 
 static struct inode_operations assoofs_inode_ops = {
@@ -374,7 +373,7 @@ int assoofs_save_inode_info(struct super_block *sb , struct assoofs_inode_info *
 	struct buffer_head *bh;
 
 	bh = sb_bread(sb, ASSOOFS_INODESTORE_BLOCK_NUMBER);
-	inode_pos = assoofs_get_inode_info(sb, inode->inode_no);
+	inode_pos = assoofs_get_inode_info(sb, inode_info->inode_no);
 
 	memcpy(inode_pos,inode_info, sizeof(*inode_pos));
 	mark_buffer_dirty(bh);
@@ -527,12 +526,6 @@ ssize_t assoofs_write(struct file *filp, const char __user *buf, size_t len, lof
 	return len;
 }
 
-
-
-
-
-
-
 //MONTAR DISCO
 static struct dentry *assoofs_mount(struct file_system_type *fs_type,int flags, const char *dev_name,void *data){
 
@@ -552,30 +545,22 @@ static struct dentry *assoofs_mount(struct file_system_type *fs_type,int flags, 
 
 static int assoofs_init(void){ //ASSOOFS INIT
 
-	
-
-	assoofs_inode_cachep = kmem_cache_create("assoofs _inode_cache",sizeof(struct assoofs_inode),0,(SLAB_RECLAIM_ACCOUNT| SLAB_MEM_SPREAD),NULL);
-	
-
+	assoofs_inode_cache = kmem_cache_create("assoofs _inode_cache",sizeof(struct assoofs_inode_info),0,(SLAB_RECLAIM_ACCOUNT| SLAB_MEM_SPREAD),NULL);
 	
 	if (register_filesystem(&assoofs_type)){
 		printk(KERN_INFO "Sucessfully registered assoofs\n");
 	}else{
-		printk(KERN_ERR "Failed to register assoofs. Error:[%d]", ret);
+		printk(KERN_ERR "Failed to register assoofs");
+		return -1;
 	}
-
-	return ret;
 }
 
 static void assoofs_exit(void){ //ASSOOFS EXIT
 
-	
-
-	
 	if (unregister_filesystem(&assoofs_type)){
 		printk(KERN_INFO "Sucessfully unregistered assoofs\n");
 	}else{
-		printk(KERN_ERR "Failed to unregister assoofs. Error:[%d]", ret);
+		printk(KERN_ERR "Failed to unregister assoofs");
 	}
 }
 
